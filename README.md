@@ -1,6 +1,6 @@
 # Data Quality Observability POC
 
-POC de contrôle de qualité de données : contrats **Soda Core v4** exécutés par un **DAG Airflow 3.3.2**, résultats stockés en Postgres et métriques poussées en **OTLP vers Grafana Cloud** (palier Free), avec un dashboard importable.
+POC de contrôle de qualité de données : contrats **Soda Core v4** exécutés par un **DAG Airflow 3.3.2**, résultats stockés en Postgres et métriques poussées en **OTLP vers Grafana Cloud** (palier Free), avec un dashboard importable et une **démo web live** (FastAPI + UI).
 
 ## Stack
 
@@ -9,6 +9,7 @@ POC de contrôle de qualité de données : contrats **Soda Core v4** exécutés 
 | Airflow 3.3.2 (Docker, image custom `dq-poc-airflow:3.3.2`) | Orchestration, quality gate Silver → Gold |
 | Soda Core 4.25 (`soda-postgres`) | Vérification des contrats de données (format v4 Data Contract) |
 | Postgres 16 `postgres-lakehouse` (port 5433) | Jeu de démo Silver + tables `dq_results`, `dq_metrics`, `gold_publications` |
+| **FastAPI + Uvicorn (`demo`, port 8000)** | **API de démo + UI : statut live, historique, injection/réparation de données, relance de check** |
 | OpenTelemetry SDK + exporter OTLP/HTTP | Jauge `dq_contract_passed` envoyée à Grafana Cloud |
 | Grafana Cloud Free (externe) | Dashboard + alertes (rétention 14 j) |
 
@@ -16,8 +17,8 @@ POC de contrôle de qualité de données : contrats **Soda Core v4** exécutés 
 
 ```
 Data Quality Observability POC/
-├── docker-compose.yml          # compose officiel Airflow 3.3.2 adapté (+ postgres-lakehouse)
-├── Dockerfile                  # apache/airflow:3.3.2-python3.12 + soda + otel
+├── docker-compose.yml          # compose officiel Airflow 3.3.2 adapté (+ postgres-lakehouse, + demo)
+├── Dockerfile                  # apache/airflow:3.3.2-python3.12 + soda + otel + fastapi
 ├── requirements.txt
 ├── .env.example                # modèle (copier vers .env) — jamais de secrets réels
 ├── config/
@@ -25,6 +26,9 @@ Data Quality Observability POC/
 │   └── postgres_init/001_init.sql   # seed silver.transactions + tables de résultats
 ├── contracts/silver_transactions.yml
 ├── dags/dq_silver_transactions.py
+├── demo/                       # backend FastAPI + UI de démo (port 8000)
+│   ├── app.py
+│   └── static/index.html
 └── grafana/dq_dashboard.json   # dashboard à importer (variable DS_PROMETHEUS)
 ```
 
@@ -38,6 +42,7 @@ docker compose up -d
 ```
 
 - UI Airflow : http://localhost:8080 (airflow/airflow par défaut)
+- **Démo web : http://localhost:8000** (voir section suivante)
 - Lakehouse : `localhost:5433` (soda/soda, base `lakehouse`)
 - Le DAG `dq_silver_transactions` est créé **paused** (cron `*/15 * * * *`) : le dépauser dans l'UI ou :
 
@@ -73,6 +78,30 @@ Arrêt : `docker compose down` (ajouter `-v` pour supprimer les volumes).
 
 Si `OTEL_EXPORTER_OTLP_ENDPOINT` est vide, l'export des métriques est simplement ignoré (log dans la tâche) ; le contrôle de qualité reste fonctionnel.
 
+## Démo web live (port 8000)
+
+Service `demo` (FastAPI, même image que Airflow → Soda disponible) avec une UI sombre auto-rafraîchie (5 s) :
+
+- **Statut** du dernier check (PASS/FAIL, exit code, horodatage) et état du lakehouse (lignes totales / invalides, publications Gold, checks exécutés)
+- **Historique** des checks (table)
+- **Boutons de scénario de démo** :
+  1. *Lancer le check* → exécute `soda contract verify` en direct (~5-7 s), journal en sortie
+  2. *Injecter des données invalides* → insère une ligne à montant négatif
+  3. *Relancer le check* → **FAIL** (le gate passe au rouge)
+  4. *Réparer les données* → supprime les lignes invalides, le check repasse **PASS**
+
+Endpoints API (OpenAPI sur `/docs`) :
+
+| Méthode | Route | Rôle |
+|---------|-------|------|
+| GET | `/api/summary` | Dernier check + compteurs lakehouse |
+| GET | `/api/history?limit=20` | Historique `dq_results` |
+| POST | `/api/check` | Exécute le contrat Soda et enregistre le résultat |
+| POST | `/api/inject` | Insère une ligne invalide (montant négatif) |
+| POST | `/api/fix` | Supprime les lignes invalides |
+
+Notes : le service écrit dans les mêmes tables que le DAG (duplicata volontaire pour que la démo soit autonome) ; aucune authentification (POC local, ne pas exposer le port 8000).
+
 ## Fonctionnement
 
 DAG `dq_silver_transactions` (deux tâches TaskFlow) :
@@ -91,6 +120,7 @@ Contrat (`contracts/silver_transactions.yml`) sur `lakehouse/lakehouse/silver/tr
 - Exécution du DAG (manuel + schedule) : `verify_contract` = success, `publish_gold` = success ; lignes présentes dans `dq_results`, `dq_metrics`, `gold_publications`.
 - Chemin échec : montant négatif inséré → `verify_contract` = failed (exit 1, `contract_passed = 0`), `publish_gold` = `upstream_failed` (non exécuté). Ligne supprimée après le test.
 - Code OTel (import, `create_gauge`, `set`, `force_flush`, `shutdown`) exécuté dans le conteneur : OK, l'échec d'export est loggé sans exception.
+- **Démo web** (service `demo`, port 8000) : healthy, UI 200, cycle complet `check pass → inject → check fail (exit 1) → fix → check pass` via l'API ; durées de check ~6 s après réchauffement (50 s au premier lancer = démarrage à froid).
 
 **Non testé** : réception réelle des métriques par Grafana Cloud (aucun endpoint/token dans l'environnement), import du dashboard et création des alertes dans Grafana, exécution prolongée (cron sur plusieurs cycles).
 

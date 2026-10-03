@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DataPulse — Data Quality Demo</title>
+<style>
+  :root {
+    --bg: #0d1117; --card: #161b22; --border: #30363d; --text: #e6edf3;
+    --muted: #8b949e; --green: #3fb950; --red: #f85149; --amber: #d29922;
+    --blue: #58a6ff;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; }
+  .wrap { max-width: 1100px; margin: 0 auto; padding: 24px 16px 48px; }
+  header { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 20px; }
+  h1 { font-size: 22px; margin: 0; }
+  h1 span { color: var(--blue); }
+  header a { color: var(--muted); text-decoration: none; font-size: 13px; }
+  header a:hover { color: var(--blue); }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 800px) { .grid { grid-template-columns: 1fr; } }
+  .card { background: var(--card); border: 1px solid var(--border);
+          border-radius: 10px; padding: 18px; }
+  .card h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .08em;
+             color: var(--muted); margin: 0 0 12px; }
+  #status { font-size: 46px; font-weight: 700; line-height: 1.1; }
+  #status.pass { color: var(--green); }
+  #status.fail, #status.error { color: var(--red); }
+  #status.warn { color: var(--amber); }
+  #status.none { color: var(--muted); }
+  .meta { color: var(--muted); font-size: 13px; margin-top: 8px; }
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+  @media (max-width: 800px) { .stats { grid-template-columns: repeat(2, 1fr); } }
+  .stat { background: #0d1117; border: 1px solid var(--border);
+          border-radius: 8px; padding: 10px 12px; }
+  .stat b { display: block; font-size: 24px; }
+  .stat span { color: var(--muted); font-size: 12px; }
+  .stat.bad b { color: var(--red); }
+  .actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 6px; }
+  button { background: #21262d; color: var(--text); border: 1px solid var(--border);
+           border-radius: 8px; padding: 10px 16px; font-size: 14px; cursor: pointer; }
+  button:hover:not(:disabled) { border-color: var(--blue); }
+  button:disabled { opacity: .5; cursor: wait; }
+  button.primary { background: #1f6feb; border-color: #1f6feb; }
+  button.danger  { background: #b62324; border-color: #b62324; }
+  button.ok      { background: #238636; border-color: #238636; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; text-transform: uppercase; }
+  .pill { padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+  .pill.pass { background: rgba(63,185,80,.15); color: var(--green); }
+  .pill.fail, .pill.error { background: rgba(248,81,73,.15); color: var(--red); }
+  .pill.warn { background: rgba(210,153,34,.15); color: var(--amber); }
+  #log { background: #010409; border: 1px solid var(--border); border-radius: 8px;
+         padding: 10px 12px; margin-top: 12px; max-height: 220px; overflow: auto;
+         font: 12px/1.45 ui-monospace, Consolas, monospace; white-space: pre-wrap;
+         color: var(--muted); display: none; }
+  .full { grid-column: 1 / -1; }
+  .hint { color: var(--muted); font-size: 12.5px; margin-top: 10px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1><span>DataPulse</span> — Data Quality Demo</h1>
+    <a href="http://localhost:8080" target="_blank">Airflow UI</a>
+    <a href="/docs" target="_blank">API (OpenAPI)</a>
+    <span id="clock" class="meta"></span>
+  </header>
+
+  <div class="grid">
+    <div class="card">
+      <h2>Dernier check du contrat Soda</h2>
+      <div id="status" class="none">—</div>
+      <div class="meta" id="lastmeta">en attente…</div>
+      <div class="meta">dataset : lakehouse/lakehouse/silver/transactions</div>
+    </div>
+
+    <div class="card">
+      <h2>Etat du lakehouse</h2>
+      <div class="stats">
+        <div class="stat"><b id="rows_total">—</b><span>lignes Silver</span></div>
+        <div class="stat" id="badwrap"><b id="rows_bad">—</b><span>lignes invalides</span></div>
+        <div class="stat"><b id="gold">—</b><span>publications Gold</span></div>
+        <div class="stat"><b id="checks">—</b><span>checks executes</span></div>
+      </div>
+      <div class="hint">Le DAG Airflow <b>dq_silver_transactions</b> rejoue ce check toutes les 15 min.</div>
+    </div>
+
+    <div class="card full">
+      <h2>Declencher une demo</h2>
+      <div class="actions">
+        <button class="primary" id="btnCheck">Lancer le check</button>
+        <button class="danger" id="btnInject">Injecter des donnees invalides</button>
+        <button class="ok" id="btnFix">Reparer les donnees</button>
+      </div>
+      <div id="log"></div>
+    </div>
+
+    <div class="card full">
+      <h2>Historique des checks</h2>
+      <table>
+        <thead><tr><th>Heure</th><th>Resultat</th><th>Exit code</th></tr></thead>
+        <tbody id="hist"><tr><td colspan="3" class="meta">chargement…</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const fmt = (iso) => iso ? new Date(iso).toLocaleTimeString('fr-FR') + '.' +
+  String(new Date(iso).getMilliseconds()).padStart(3, '0') : '—';
+
+async function jget(url) { const r = await fetch(url); if (!r.ok) throw new Error(r.status); return r.json(); }
+async function jpost(url) { const r = await fetch(url, {method: 'POST'}); const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(body.detail || r.status); return body; }
+
+async function refresh() {
+  try {
+    const [s, h] = await Promise.all([jget('/api/summary'), jget('/api/history?limit=15')]);
+    const st = $('status'), last = s.last_check;
+    if (!last) { st.textContent = '—'; st.className = 'none'; }
+    else { st.textContent = last.outcome.toUpperCase(); st.className = last.outcome;
+      $('lastmeta').textContent = `exit code ${last.exit_code} — ${fmt(last.executed_at)}`; }
+    $('rows_total').textContent = s.rows_total;
+    $('rows_bad').textContent = s.rows_bad;
+    $('badwrap').className = 'stat' + (s.rows_bad > 0 ? ' bad' : '');
+    $('gold').textContent = s.gold_publications;
+    $('checks').textContent = s.checks_total;
+    $('hist').innerHTML = s && h.history.length ? h.history.map(r =>
+      `<tr><td>${fmt(r.executed_at)}</td><td><span class="pill ${r.outcome}">${r.outcome}</span></td><td>${r.exit_code}</td></tr>`
+    ).join('') : '<tr><td colspan="3" class="meta">aucun check enregistre</td></tr>';
+    $('clock').textContent = 'auto-refresh 5 s — ' + new Date().toLocaleTimeString('fr-FR');
+  } catch (e) { $('clock').textContent = 'API injoignable: ' + e.message; }
+}
+
+function busy(btns, on) { btns.forEach(b => b.disabled = on); }
+function showLog(text) { const l = $('log'); l.style.display = 'block'; l.textContent = text; }
+
+async function runCheck() {
+  const btns = [$('btnCheck'), $('btnInject'), $('btnFix')];
+  busy(btns, true); showLog('soda contract verify en cours…');
+  try {
+    const r = await jpost('/api/check');
+    showLog(`resultat : ${r.outcome.toUpperCase()} (exit ${r.exit_code}, ${r.duration_s}s)\n\n` +
+            (r.output_tail || ''));
+  } catch (e) { showLog('ERREUR: ' + e.message); }
+  busy(btns, false); refresh();
+}
+
+async function inject() {
+  try { const r = await jpost('/api/inject');
+    showLog(`ligne invalide inseree : transaction_id=${r.transaction_id}, amount=${r.amount}\n` +
+            `Relancez le check pour voir le gate passer en FAIL.`);
+  } catch (e) { showLog('ERREUR: ' + e.message); }
+  refresh();
+}
+
+async function fix() {
+  try { const r = await jpost('/api/fix');
+    showLog(`${r.deleted} ligne(s) invalide(s) supprimee(s). Relancez le check.`);
+  } catch (e) { showLog('ERREUR: ' + e.message); }
+  refresh();
+}
+
+$('btnCheck').onclick = runCheck;
+$('btnInject').onclick = inject;
+$('btnFix').onclick = fix;
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>

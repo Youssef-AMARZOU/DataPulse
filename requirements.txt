@@ -3,3 +3,5 @@ soda-postgres>=4.25.0,<5
 opentelemetry-sdk>=1.44.0,<2
 opentelemetry-exporter-otlp-proto-http>=1.44.0,<2
 psycopg2-binary>=2.9.13,<3
+fastapi>=0.115,<1
+uvicorn>=0.30,<1

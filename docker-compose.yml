@@ -362,6 +362,29 @@ services:
       airflow-init:
         condition: service_completed_successfully
 
+  # Demo web : FastAPI + UI (http://localhost:8000) pour montrer le gate en live.
+  demo:
+    <<: *airflow-common
+    # L'entrypoint de l'image Airflow exécute toujours `airflow ...` : on le contourne.
+    entrypoint: ["uvicorn"]
+    command: ["--host", "0.0.0.0", "--port", "8000", "--app-dir", "/opt/airflow", "demo.app:app"]
+    volumes:
+      - ${AIRFLOW_PROJ_DIR:-.}/demo:/opt/airflow/demo:ro
+      - ${AIRFLOW_PROJ_DIR:-.}/config:/opt/airflow/config:ro
+      - ${AIRFLOW_PROJ_DIR:-.}/contracts:/opt/airflow/contracts:ro
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8000/api/summary"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 15s
+    restart: always
+    depends_on:
+      postgres-lakehouse:
+        condition: service_healthy
+
 volumes:
   postgres-db-volume:
   lakehouse-db-volume:
