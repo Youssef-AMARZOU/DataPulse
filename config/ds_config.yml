@@ -1,0 +1,10 @@
+# Soda Core v4 data source (chemin monté dans le conteneur Airflow : /opt/airflow/config/ds_config.yml)
+# Les variables ${env.*} sont résolues depuis l'environnement du conteneur (définies dans docker-compose.yml).
+type: postgres
+name: lakehouse
+connection:
+  user: ${env.LAKEHOUSE_USER}
+  host: ${env.LAKEHOUSE_HOST}
+  port: ${env.LAKEHOUSE_PORT}
+  password: ${env.LAKEHOUSE_PASSWORD}
+  database: ${env.LAKEHOUSE_DB}

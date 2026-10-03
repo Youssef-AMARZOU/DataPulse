@@ -1,0 +1,31 @@
+# Soda Core v4 data contract (format Data Contract, remplace SodaCL v3 depuis v4).
+# DQN : <data source name>/<database>/<schema>/<table>
+dataset: lakehouse/lakehouse/silver/transactions
+
+columns:
+  - name: transaction_id
+    checks:
+      - missing:
+      - duplicate:
+  - name: customer_id
+    checks:
+      - missing:
+  - name: amount
+    checks:
+      - invalid:
+          valid_min: 0
+  - name: status
+    checks:
+      - invalid:
+          valid_values: ['completed', 'pending', 'refunded']
+  - name: event_ts
+
+checks:
+  - schema:
+      allow_extra_columns: false
+  - row_count:
+  - freshness:
+      column: event_ts
+      threshold:
+        unit: hour
+        must_be_less_than: 24

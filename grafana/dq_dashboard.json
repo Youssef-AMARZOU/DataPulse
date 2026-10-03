@@ -1,0 +1,103 @@
+{
+  "__inputs": [
+    {
+      "name": "DS_PROMETHEUS",
+      "label": "Prometheus",
+      "description": "",
+      "type": "datasource",
+      "pluginId": "prometheus",
+      "pluginName": "Prometheus"
+    }
+  ],
+  "title": "Data Quality - silver.transactions",
+  "uid": "dq-poc-silver-transactions",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Contrat Soda - dernier résultat",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "dq_contract_passed",
+          "legendFormat": "{{dataset}}",
+          "instant": true
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "values": false },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "background",
+        "graphMode": "none",
+        "wideLayout": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "dq_contract_passed (1 = pass, 0 = fail)",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 7, "w": 16, "x": 8, "y": 0 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "dq_contract_passed",
+          "legendFormat": "{{dataset}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "min": 0,
+          "max": 1,
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "single" }
+      }
+    },
+    {
+      "id": 3,
+      "type": "text",
+      "title": "Règles d'alerte à créer (Alerts & IRM)",
+      "datasource": { "type": "grafana", "uid": "-- Grafana --" },
+      "gridPos": { "h": 7, "w": 24, "x": 0, "y": 7 },
+      "options": {
+        "mode": "markdown",
+        "content": "**1. Contrat en échec**\n\n```\ndq_contract_passed == 0\n```\n\n**2. Pipeline de contrôle silencieusement cassé (aucune métrique reçue)**\n\n```\nabsent_over_time(dq_contract_passed{dataset=\"lakehouse.silver.transactions\"}[1h])\n```\n\nRétention Grafana Cloud Free : 14 jours - l'historique long reste dans `dq_results` (Postgres) / Power BI."
+      }
+    }
+  ]
+}
