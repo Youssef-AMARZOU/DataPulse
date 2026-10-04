@@ -1,10 +1,7 @@
-"""Quality gate Silver -> Gold pour silver.transactions (jeu pedagogique 60 lignes).
+"""Quality gate Silver -> Gold pour silver.nyc_taxi (6 mois de donnees TLC reelles).
 
-1. `verify_contract`  : soda contract verify -> dq_results/dq_metrics (Postgres) -> gauge OTLP.
-2. `publish_gold`     : ne s'execute que si la verification passe (Airflow gate).
-
-Codes de sortie Soda Core v4 : 0 = pass, 1 = fail, 2 = warn, >= 3 = error.
-Un warning n'arrete pas le pipeline ; fail et error bloquent.
+Meme mecanisme que dq_silver_transactions (voir dq_lib) : verification Soda,
+persistance, jauge OTLP, puis publication Gold sous condition de reussite.
 """
 
 from __future__ import annotations
@@ -18,9 +15,9 @@ import dq_lib
 
 log = logging.getLogger(__name__)
 
-DATASET_DQN = "lakehouse/lakehouse/silver/transactions"
-DATASET_LABEL = "lakehouse.silver.transactions"
-CONTRACT = "/opt/airflow/contracts/silver_transactions.yml"
+DATASET_DQN = "lakehouse/lakehouse/silver/nyc_taxi"
+DATASET_LABEL = "lakehouse.silver.nyc_taxi"
+CONTRACT = "/opt/airflow/contracts/nyc_taxi.yml"
 
 
 def _verify() -> dict:
@@ -39,7 +36,6 @@ def _verify() -> dict:
     try:
         dq_lib.push_otel(DATASET_LABEL, passed)
     except Exception:
-        # L'observabilite ne doit pas faire echouer le controle de qualite.
         log.exception("Echec de l'export OTLP (la verification reste valable)")
 
     if not passed:
@@ -51,11 +47,11 @@ def _verify() -> dict:
 
 
 with DAG(
-    "dq_silver_transactions",
+    "dq_nyc_taxi",
     start_date=datetime(2026, 1, 1),
-    schedule="*/15 * * * *",
+    schedule="30 */6 * * *",  # toutes les 6 h : le check porte sur ~20 M de lignes
     catchup=False,
-    tags=["dq", "poc"],
+    tags=["dq", "poc", "bigdata"],
 ) as dag:
 
     @task

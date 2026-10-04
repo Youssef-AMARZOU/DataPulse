@@ -385,6 +385,21 @@ services:
       postgres-lakehouse:
         condition: service_healthy
 
+  # Chargement des 6 mois de NYC TLC yellow taxi (run one-shot) :
+  #   docker compose run --rm loader
+  loader:
+    <<: *airflow-common
+    profiles: [loader]
+    # L'entrypoint de l'image Airflow exécute toujours `airflow ...` : on le contourne.
+    entrypoint: ["python"]
+    command: ["/opt/airflow/loader/load_taxi.py"]
+    volumes:
+      - ${AIRFLOW_PROJ_DIR:-.}/loader:/opt/airflow/loader:ro
+    depends_on:
+      postgres-lakehouse:
+        condition: service_healthy
+    restart: "no"
+
 volumes:
   postgres-db-volume:
   lakehouse-db-volume:

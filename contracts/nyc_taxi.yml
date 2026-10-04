@@ -1,0 +1,71 @@
+# Soda Core v4 contract — NYC TLC yellow taxi (6 mois : 2024-01 .. 2024-06).
+# L'ordre des colonnes doit correspondre exactement au schéma de la table
+# (allow_extra_columns: false + ordre strict par défaut).
+
+dataset: lakehouse/lakehouse/silver/nyc_taxi
+
+columns:
+  - name: vendor_id
+    checks:
+      - missing:
+      - invalid:
+          valid_min: 1
+          valid_max: 9
+  - name: tpep_pickup_datetime
+    checks:
+      - missing:
+  - name: tpep_dropoff_datetime
+    checks:
+      - missing:
+  - name: passenger_count
+    checks:
+      - invalid:
+          valid_min: 0
+          valid_max: 9
+  - name: trip_distance
+    checks:
+      - invalid:
+          valid_min: 0
+          valid_max: 400000
+  - name: rate_code_id
+  - name: store_and_fwd_flag
+  - name: pulocationid
+    checks:
+      - missing:
+  - name: dolocationid
+  - name: payment_type
+    checks:
+      - invalid:
+          valid_values: [0, 1, 2, 3, 4, 5]
+  - name: fare_amount
+    checks:
+      - invalid:
+          valid_min: -2000
+          valid_max: 400000
+  - name: extra
+  - name: mta_tax
+  - name: tip_amount
+  - name: tolls_amount
+  - name: improvement_surcharge
+  - name: total_amount
+    checks:
+      - invalid:
+          valid_min: -2000
+          valid_max: 400000
+  - name: congestion_surcharge
+  - name: airport_fee
+  - name: loaded_at
+    checks:
+      - missing:
+
+checks:
+  - schema:
+      allow_extra_columns: false
+  - row_count:
+      threshold:
+        must_be_greater_than_or_equal: 15000000
+  - freshness:
+      column: loaded_at
+      threshold:
+        unit: hour
+        must_be_less_than: 336

@@ -14,11 +14,16 @@
   body { margin: 0; background: var(--bg); color: var(--text);
          font: 15px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; }
   .wrap { max-width: 1100px; margin: 0 auto; padding: 24px 16px 48px; }
-  header { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 20px; }
+  header { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 14px; }
   h1 { font-size: 22px; margin: 0; }
   h1 span { color: var(--blue); }
   header a { color: var(--muted); text-decoration: none; font-size: 13px; }
   header a:hover { color: var(--blue); }
+  .tabs { display: flex; gap: 8px; margin-bottom: 16px; }
+  .tab { background: var(--card); border: 1px solid var(--border); color: var(--muted);
+         border-radius: 999px; padding: 7px 16px; font-size: 14px; cursor: pointer; }
+  .tab.active { border-color: var(--blue); color: var(--text); background: #12233d; }
+  .tab small { color: var(--muted); }
   .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
   @media (max-width: 800px) { .grid { grid-template-columns: 1fr; } }
   .card { background: var(--card); border: 1px solid var(--border);
@@ -42,7 +47,7 @@
   button { background: #21262d; color: var(--text); border: 1px solid var(--border);
            border-radius: 8px; padding: 10px 16px; font-size: 14px; cursor: pointer; }
   button:hover:not(:disabled) { border-color: var(--blue); }
-  button:disabled { opacity: .5; cursor: wait; }
+  button:disabled { opacity: .4; cursor: not-allowed; }
   button.primary { background: #1f6feb; border-color: #1f6feb; }
   button.danger  { background: #b62324; border-color: #b62324; }
   button.ok      { background: #238636; border-color: #238636; }
@@ -70,23 +75,28 @@
     <span id="clock" class="meta"></span>
   </header>
 
+  <div class="tabs">
+    <button class="tab active" data-ds="transactions">transactions <small>(60 lignes)</small></button>
+    <button class="tab" data-ds="taxi">nyc_taxi <small>(~20 M lignes TLC)</small></button>
+  </div>
+
   <div class="grid">
     <div class="card">
       <h2>Dernier check du contrat Soda</h2>
       <div id="status" class="none">—</div>
       <div class="meta" id="lastmeta">en attente…</div>
-      <div class="meta">dataset : lakehouse/lakehouse/silver/transactions</div>
+      <div class="meta" id="dqn">—</div>
     </div>
 
     <div class="card">
       <h2>Etat du lakehouse</h2>
       <div class="stats">
-        <div class="stat"><b id="rows_total">—</b><span>lignes Silver</span></div>
-        <div class="stat" id="badwrap"><b id="rows_bad">—</b><span>lignes invalides</span></div>
+        <div class="stat"><b id="rows_total">—</b><span id="rows_label">lignes</span></div>
+        <div class="stat" id="badwrap"><b id="rows_bad">—</b><span>hors contrat</span></div>
         <div class="stat"><b id="gold">—</b><span>publications Gold</span></div>
         <div class="stat"><b id="checks">—</b><span>checks executes</span></div>
       </div>
-      <div class="hint">Le DAG Airflow <b>dq_silver_transactions</b> rejoue ce check toutes les 15 min.</div>
+      <div class="hint" id="daghint">—</div>
     </div>
 
     <div class="card full">
@@ -96,6 +106,7 @@
         <button class="danger" id="btnInject">Injecter des donnees invalides</button>
         <button class="ok" id="btnFix">Reparer les donnees</button>
       </div>
+      <div class="hint" id="actionhint">inject/fix agissent sur le jeu <b>transactions</b> uniquement.</div>
       <div id="log"></div>
     </div>
 
@@ -111,6 +122,7 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
+let current = 'transactions';
 const fmt = (iso) => iso ? new Date(iso).toLocaleTimeString('fr-FR') + '.' +
   String(new Date(iso).getMilliseconds()).padStart(3, '0') : '—';
 
@@ -118,34 +130,58 @@ async function jget(url) { const r = await fetch(url); if (!r.ok) throw new Erro
 async function jpost(url) { const r = await fetch(url, {method: 'POST'}); const body = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(body.detail || r.status); return body; }
 
+const META = {
+  transactions: { dqn: 'lakehouse/lakehouse/silver/transactions',
+    dag: 'Le DAG <b>dq_silver_transactions</b> rejoue ce check toutes les 15 min.',
+    rows: 'lignes Silver' },
+  taxi: { dqn: 'lakehouse/lakehouse/silver/nyc_taxi',
+    dag: 'Le DAG <b>dq_nyc_taxi</b> rejoue ce check toutes les 6 h (20 M de lignes).',
+    rows: 'lignes TLC (6 mois)' },
+};
+
+function applyMeta() {
+  const m = META[current];
+  $('dqn').textContent = m.dqn;
+  $('daghint').innerHTML = m.dag;
+  $('rows_label').textContent = m.rows;
+  const isTx = current === 'transactions';
+  $('btnInject').disabled = !isTx;
+  $('btnFix').disabled = !isTx;
+  $('actionhint').innerHTML = isTx
+    ? 'inject/fix agissent sur le jeu <b>transactions</b> uniquement.'
+    : 'inject/fix sont desactives sur <b>nyc_taxi</b> (donnees reelles) — utilisez la API si besoin.';
+}
+
 async function refresh() {
   try {
-    const [s, h] = await Promise.all([jget('/api/summary'), jget('/api/history?limit=15')]);
+    const q = `?dataset=${current}`;
+    const [s, h] = await Promise.all([jget('/api/summary' + q), jget('/api/history' + q + '&limit=15')]);
     const st = $('status'), last = s.last_check;
-    if (!last) { st.textContent = '—'; st.className = 'none'; }
+    if (!last) { st.textContent = '—'; st.className = 'none'; $('lastmeta').textContent = 'aucun check enregistre'; }
     else { st.textContent = last.outcome.toUpperCase(); st.className = last.outcome;
       $('lastmeta').textContent = `exit code ${last.exit_code} — ${fmt(last.executed_at)}`; }
-    $('rows_total').textContent = s.rows_total;
-    $('rows_bad').textContent = s.rows_bad;
+    $('rows_total').textContent = s.rows_total.toLocaleString('fr-FR');
+    $('rows_bad').textContent = s.rows_bad.toLocaleString('fr-FR');
     $('badwrap').className = 'stat' + (s.rows_bad > 0 ? ' bad' : '');
     $('gold').textContent = s.gold_publications;
     $('checks').textContent = s.checks_total;
-    $('hist').innerHTML = s && h.history.length ? h.history.map(r =>
+    $('hist').innerHTML = h.history.length ? h.history.map(r =>
       `<tr><td>${fmt(r.executed_at)}</td><td><span class="pill ${r.outcome}">${r.outcome}</span></td><td>${r.exit_code}</td></tr>`
     ).join('') : '<tr><td colspan="3" class="meta">aucun check enregistre</td></tr>';
     $('clock').textContent = 'auto-refresh 5 s — ' + new Date().toLocaleTimeString('fr-FR');
   } catch (e) { $('clock').textContent = 'API injoignable: ' + e.message; }
 }
 
-function busy(btns, on) { btns.forEach(b => b.disabled = on); }
+function busy(btns, on) { btns.forEach(b => b.disabled = on); applyMeta(); }
 function showLog(text) { const l = $('log'); l.style.display = 'block'; l.textContent = text; }
 
 async function runCheck() {
   const btns = [$('btnCheck'), $('btnInject'), $('btnFix')];
-  busy(btns, true); showLog('soda contract verify en cours…');
+  busy(btns, true);
+  showLog(`soda contract verify (${current}) en cours…` + (current === 'taxi' ? ' — jusqu\'a 60 s sur 20 M de lignes' : ''));
   try {
-    const r = await jpost('/api/check');
-    showLog(`resultat : ${r.outcome.toUpperCase()} (exit ${r.exit_code}, ${r.duration_s}s)\n\n` +
+    const r = await jpost(`/api/check?dataset=${current}`);
+    showLog(`[${r.dataset}] resultat : ${r.outcome.toUpperCase()} (exit ${r.exit_code}, ${r.duration_s}s)\n\n` +
             (r.output_tail || ''));
   } catch (e) { showLog('ERREUR: ' + e.message); }
   busy(btns, false); refresh();
@@ -166,9 +202,16 @@ async function fix() {
   refresh();
 }
 
+document.querySelectorAll('.tab').forEach(t => t.onclick = () => {
+  document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+  t.classList.add('active');
+  current = t.dataset.ds;
+  applyMeta(); refresh();
+});
 $('btnCheck').onclick = runCheck;
 $('btnInject').onclick = inject;
 $('btnFix').onclick = fix;
+applyMeta();
 refresh();
 setInterval(refresh, 5000);
 </script>

@@ -1,10 +1,12 @@
 """DataPulse demo API.
 
-FastAPI backend served in the `demo` container : exposes the quality results
-stored by the Airflow DAG, runs Soda contract checks on demand, and injects /
-repairs bad data to demonstrate the Silver -> Gold quality gate live.
+FastAPI backend servi dans le conteneur `demo` : expose les resultats de
+qualite enregistres par les DAGs Airflow, relance les contrats Soda a la
+demande, et injecte / repare des donnees invalides pour montrer le gate en live.
 
-Runs from the same image as Airflow (soda + psycopg2 available).
+Deux jeux de donnees coexistent :
+- transactions : silver.transactions (60 lignes, scenario pedagogique inject/fix)
+- taxi         : silver.nyc_taxi (~20 M lignes TLC reelles, 2024-01..06)
 """
 
 from __future__ import annotations
@@ -15,16 +17,34 @@ import time
 from pathlib import Path
 
 import psycopg2
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 
-app = FastAPI(title="DataPulse Demo API", version="1.0")
+app = FastAPI(title="DataPulse Demo API", version="2.0")
 
 DS_CONFIG = "/opt/airflow/config/ds_config.yml"
-CONTRACT = "/opt/airflow/contracts/silver_transactions.yml"
 SODA_TIMEOUT_SECONDS = 600
 OUTCOMES = {0: "pass", 1: "fail", 2: "warn"}
 STATIC_DIR = Path(__file__).parent / "static"
+
+DATASETS = {
+    "transactions": {
+        "dqn": "lakehouse/lakehouse/silver/transactions",
+        "table": "silver.transactions",
+        "contract": "/opt/airflow/contracts/silver_transactions.yml",
+        "bad_where": "amount < 0 OR status NOT IN ('completed','pending','refunded')",
+    },
+    "taxi": {
+        "dqn": "lakehouse/lakehouse/silver/nyc_taxi",
+        "table": "silver.nyc_taxi",
+        "contract": "/opt/airflow/contracts/nyc_taxi.yml",
+        "bad_where": (
+            "trip_distance < 0 OR trip_distance > 400000 "
+            "OR total_amount < -2000 OR total_amount > 400000 "
+            "OR payment_type NOT IN (0,1,2,3,4,5)"
+        ),
+    },
+}
 
 
 def _conn():
@@ -37,27 +57,27 @@ def _conn():
     )
 
 
-def _record(outcome: str, exit_code: int, details: str, passed: bool) -> None:
+def _ds(name: str) -> dict:
+    if name not in DATASETS:
+        raise HTTPException(status_code=404, detail=f"dataset inconnu: {name}")
+    return DATASETS[name]
+
+
+def _record(ds: dict, outcome: str, exit_code: int, details: str, passed: bool) -> None:
     with _conn() as conn, conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO dq_results (dataset, contract, outcome, exit_code, details)
             VALUES (%s, %s, %s, %s, %s)
             """,
-            (
-                "lakehouse/lakehouse/silver/transactions",
-                "silver_transactions.yml",
-                outcome,
-                exit_code,
-                details,
-            ),
+            (ds["dqn"], ds["contract"].rsplit("/", 1)[-1], outcome, exit_code, details),
         )
         cur.execute(
             """
             INSERT INTO dq_metrics (dataset, metric, value)
             VALUES (%s, 'contract_passed', %s)
             """,
-            ("lakehouse/lakehouse/silver/transactions", 1.0 if passed else 0.0),
+            (ds["dqn"], 1.0 if passed else 0.0),
         )
 
 
@@ -67,31 +87,42 @@ def index() -> FileResponse:
 
 
 @app.get("/api/summary")
-def summary() -> dict:
+def summary(dataset: str = Query("transactions")) -> dict:
+    ds = _ds(dataset)
     with _conn() as conn, conn.cursor() as cur:
         cur.execute(
             """
             SELECT dataset, contract, outcome, exit_code, executed_at
-            FROM dq_results ORDER BY id DESC LIMIT 1
-            """
+            FROM dq_results WHERE dataset = %s ORDER BY id DESC LIMIT 1
+            """,
+            (ds["dqn"],),
         )
         last = cur.fetchone()
         cur.execute(
             """
             SELECT value FROM dq_metrics
-            WHERE metric = 'contract_passed' ORDER BY id DESC LIMIT 1
-            """
+            WHERE dataset = %s AND metric = 'contract_passed'
+            ORDER BY id DESC LIMIT 1
+            """,
+            (ds["dqn"],),
         )
         m = cur.fetchone()
-        cur.execute("SELECT count(*) FROM silver.transactions")
-        total = cur.fetchone()[0]
-        cur.execute("SELECT count(*) FROM silver.transactions WHERE amount < 0 OR status NOT IN ('completed','pending','refunded')")
-        bad = cur.fetchone()[0]
-        cur.execute("SELECT count(*) FROM gold_publications")
+        try:
+            cur.execute(f"SELECT count(*) FROM {ds['table']}")
+            total = cur.fetchone()[0]
+            cur.execute(f"SELECT count(*) FROM {ds['table']} WHERE {ds['bad_where']}")
+            bad = cur.fetchone()[0]
+        except Exception:  # noqa: BLE001 - table absente (chargement en cours)
+            conn.rollback()
+            total, bad = None, None
+        cur.execute(
+            "SELECT count(*) FROM gold_publications WHERE dataset = %s", (ds["dqn"],)
+        )
         pubs = cur.fetchone()[0]
-        cur.execute("SELECT count(*) FROM dq_results")
+        cur.execute("SELECT count(*) FROM dq_results WHERE dataset = %s", (ds["dqn"],))
         runs = cur.fetchone()[0]
     return {
+        "dataset": dataset,
         "last_check": (
             {
                 "dataset": last[0],
@@ -112,22 +143,24 @@ def summary() -> dict:
 
 
 @app.get("/api/history")
-def history(limit: int = 20) -> dict:
+def history(dataset: str = Query("transactions"), limit: int = 20) -> dict:
+    ds = _ds(dataset)
     limit = max(1, min(limit, 100))
     with _conn() as conn, conn.cursor() as cur:
         cur.execute(
             """
             SELECT outcome, exit_code, executed_at
-            FROM dq_results ORDER BY id DESC LIMIT %s
+            FROM dq_results WHERE dataset = %s ORDER BY id DESC LIMIT %s
             """,
-            (limit,),
+            (ds["dqn"], limit),
         )
         rows = cur.fetchall()
     return {
+        "dataset": dataset,
         "history": [
             {"outcome": r[0], "exit_code": r[1], "executed_at": r[2].isoformat()}
             for r in rows
-        ]
+        ],
     }
 
 
@@ -157,11 +190,12 @@ def fix() -> dict:
 
 
 @app.post("/api/check")
-def check() -> dict:
-    """Execute soda contract verify, enregistre le resultat, renvoie le detail."""
+def check(dataset: str = Query("transactions")) -> dict:
+    """Execute soda contract verify sur le dataset choisi, enregistre le resultat."""
+    ds = _ds(dataset)
     t0 = time.monotonic()
     proc = subprocess.run(
-        ["soda", "contract", "verify", "-ds", DS_CONFIG, "-c", CONTRACT],
+        ["soda", "contract", "verify", "-ds", DS_CONFIG, "-c", ds["contract"]],
         capture_output=True,
         text=True,
         timeout=SODA_TIMEOUT_SECONDS,
@@ -171,10 +205,11 @@ def check() -> dict:
     outcome = OUTCOMES.get(proc.returncode, "error")
     passed = proc.returncode in (0, 2)
     try:
-        _record(outcome, proc.returncode, output[-4000:], passed)
+        _record(ds, outcome, proc.returncode, output[-4000:], passed)
     except Exception as exc:  # noqa: BLE001 - demo API : on renvoie l'erreur
         raise HTTPException(status_code=500, detail=f"enregistrement impossible: {exc}")
     return {
+        "dataset": dataset,
         "outcome": outcome,
         "exit_code": proc.returncode,
         "passed": passed,
