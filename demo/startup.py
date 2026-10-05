@@ -105,11 +105,15 @@ def ensure_ready() -> None:
     status.update(state="running", detail="creation du schema et des tables")
     with _conn() as conn, conn.cursor() as cur:
         cur.execute(INIT_SQL)
+        # Commit immediat : DuckDB (loader) ouvre une autre connexion et doit
+        # voir le schema avant la fin du bloc (sinon "Schema silver not found").
+        conn.commit()
 
         cur.execute("SELECT count(*) FROM silver.transactions")
         if cur.fetchone()[0] == 0:
             status.update(detail="seed silver.transactions (60 lignes)")
             cur.execute(SEED_SQL)
+            conn.commit()
 
         cur.execute("SELECT to_regclass('silver.nyc_taxi')")
         if cur.fetchone()[0] is None:
