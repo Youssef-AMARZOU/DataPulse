@@ -122,7 +122,8 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
-let current = 'transactions';
+const qs = new URLSearchParams(location.search);
+let current = qs.get('ds') === 'taxi' ? 'taxi' : 'transactions';
 const fmt = (iso) => iso ? new Date(iso).toLocaleTimeString('fr-FR') + '.' +
   String(new Date(iso).getMilliseconds()).padStart(3, '0') : '—';
 
@@ -206,11 +207,16 @@ document.querySelectorAll('.tab').forEach(t => t.onclick = () => {
   document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
   t.classList.add('active');
   current = t.dataset.ds;
+  history.replaceState(null, '', '?ds=' + current);
   applyMeta(); refresh();
 });
 $('btnCheck').onclick = runCheck;
 $('btnInject').onclick = inject;
 $('btnFix').onclick = fix;
+document.querySelectorAll('.tab').forEach(t => {
+  if (t.dataset.ds === current) t.classList.add('active');
+  else t.classList.remove('active');
+});
 applyMeta();
 refresh();
 setInterval(refresh, 5000);

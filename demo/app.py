@@ -20,9 +20,17 @@ import psycopg2
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 
+try:
+    from demo import startup
+except ImportError:  # excecution directe hors package
+    import startup
+
 app = FastAPI(title="DataPulse Demo API", version="2.0")
 
-DS_CONFIG = "/opt/airflow/config/ds_config.yml"
+DS_CONFIG = os.environ.get("DS_CONFIG", "/opt/airflow/config/ds_config.yml")
+
+# Initialisation idempotente (no-op en local, seed + load au 1er boot heberge).
+startup.start()
 SODA_TIMEOUT_SECONDS = 600
 OUTCOMES = {0: "pass", 1: "fail", 2: "warn"}
 STATIC_DIR = Path(__file__).parent / "static"
@@ -37,7 +45,7 @@ DATASETS = {
     "taxi": {
         "dqn": "lakehouse/lakehouse/silver/nyc_taxi",
         "table": "silver.nyc_taxi",
-        "contract": "/opt/airflow/contracts/nyc_taxi.yml",
+        "contract": os.environ.get("TAXI_CONTRACT", "/opt/airflow/contracts/nyc_taxi.yml"),
         "bad_where": (
             "trip_distance < 0 OR trip_distance > 400000 "
             "OR total_amount < -2000 OR total_amount > 400000 "
@@ -89,38 +97,51 @@ def index() -> FileResponse:
 @app.get("/api/summary")
 def summary(dataset: str = Query("transactions")) -> dict:
     ds = _ds(dataset)
-    with _conn() as conn, conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT dataset, contract, outcome, exit_code, executed_at
-            FROM dq_results WHERE dataset = %s ORDER BY id DESC LIMIT 1
-            """,
-            (ds["dqn"],),
-        )
-        last = cur.fetchone()
-        cur.execute(
-            """
-            SELECT value FROM dq_metrics
-            WHERE dataset = %s AND metric = 'contract_passed'
-            ORDER BY id DESC LIMIT 1
-            """,
-            (ds["dqn"],),
-        )
-        m = cur.fetchone()
-        try:
-            cur.execute(f"SELECT count(*) FROM {ds['table']}")
-            total = cur.fetchone()[0]
-            cur.execute(f"SELECT count(*) FROM {ds['table']} WHERE {ds['bad_where']}")
-            bad = cur.fetchone()[0]
-        except Exception:  # noqa: BLE001 - table absente (chargement en cours)
-            conn.rollback()
-            total, bad = None, None
-        cur.execute(
-            "SELECT count(*) FROM gold_publications WHERE dataset = %s", (ds["dqn"],)
-        )
-        pubs = cur.fetchone()[0]
-        cur.execute("SELECT count(*) FROM dq_results WHERE dataset = %s", (ds["dqn"],))
-        runs = cur.fetchone()[0]
+    empty = {
+        "dataset": dataset,
+        "last_check": None,
+        "contract_passed": None,
+        "rows_total": None,
+        "rows_bad": None,
+        "gold_publications": None,
+        "checks_total": None,
+        "init": dict(startup.status),
+    }
+    try:
+        with _conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT dataset, contract, outcome, exit_code, executed_at
+                FROM dq_results WHERE dataset = %s ORDER BY id DESC LIMIT 1
+                """,
+                (ds["dqn"],),
+            )
+            last = cur.fetchone()
+            cur.execute(
+                """
+                SELECT value FROM dq_metrics
+                WHERE dataset = %s AND metric = 'contract_passed'
+                ORDER BY id DESC LIMIT 1
+                """,
+                (ds["dqn"],),
+            )
+            m = cur.fetchone()
+            try:
+                cur.execute(f"SELECT count(*) FROM {ds['table']}")
+                total = cur.fetchone()[0]
+                cur.execute(f"SELECT count(*) FROM {ds['table']} WHERE {ds['bad_where']}")
+                bad = cur.fetchone()[0]
+            except Exception:  # noqa: BLE001 - table absente (chargement en cours)
+                conn.rollback()
+                total, bad = None, None
+            cur.execute(
+                "SELECT count(*) FROM gold_publications WHERE dataset = %s", (ds["dqn"],)
+            )
+            pubs = cur.fetchone()[0]
+            cur.execute("SELECT count(*) FROM dq_results WHERE dataset = %s", (ds["dqn"],))
+            runs = cur.fetchone()[0]
+    except Exception:  # noqa: BLE001 - BDD pas encore prete au premier boot
+        return empty
     return {
         "dataset": dataset,
         "last_check": (
@@ -139,6 +160,7 @@ def summary(dataset: str = Query("transactions")) -> dict:
         "rows_bad": bad,
         "gold_publications": pubs,
         "checks_total": runs,
+        "init": dict(startup.status),
     }
 
 

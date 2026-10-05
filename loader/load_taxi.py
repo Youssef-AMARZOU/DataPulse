@@ -15,7 +15,13 @@ from pathlib import Path
 
 import duckdb
 
-MONTHS = ["2024-01", "2024-02", "2024-03", "2024-04", "2024-05", "2024-06"]
+# Mois a charger : 6 mois par defaut (~20,3 M lignes) ; TAXI_MONTHS="2024-01"
+# pour un jeu reduit compatible free tiers (~3 M lignes, ~350 Mo).
+MONTHS = [
+    m.strip()
+    for m in os.environ.get("TAXI_MONTHS", "2024-01,2024-02,2024-03,2024-04,2024-05,2024-06").split(",")
+    if m.strip()
+]
 BASE_URL = "https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_{}.parquet"
 CACHE_DIR = Path(os.environ.get("TAXI_CACHE_DIR", "/tmp/taxi"))
 

@@ -8,3 +8,4 @@ connection:
   port: ${env.LAKEHOUSE_PORT}
   password: ${env.LAKEHOUSE_PASSWORD}
   database: ${env.LAKEHOUSE_DB}
+  sslmode: ${env.LAKEHOUSE_SSLMODE}

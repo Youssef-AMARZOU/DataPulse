@@ -1,3 +1,8 @@
+﻿# Variante "hosted demo" du contrat nyc_taxi : meme regles que nyc_taxi.yml mais
+# row_count adapte au jeu reduit (TAXI_MONTHS=2024-01, ~3 M lignes) utilise par la
+# demo heergee free tier (Neon/Render). Le dataset est identique : le nom du data
+# source "lakehouse" est arbitraire et pointe soit vers le Postgres local, soit
+# vers Neon selon les variables  de ds_config.yml.
 # Soda Core v4 contract — NYC TLC yellow taxi (6 mois : 2024-01 .. 2024-06, 20,3 M lignes).
 # Regles derivees du Data Dictionary officiel NYC TLC :
 #   https://www.nyc.gov/assets/tlc/downloads/pdf/data_dictionary_trip_records_yellow.pdf
@@ -82,7 +87,7 @@ checks:
       allow_extra_columns: false
   - row_count:
       threshold:
-        must_be_greater_than_or_equal: 15000000
+        must_be_greater_than_or_equal: 2500000
   - freshness:
       column: loaded_at
       threshold:
@@ -108,3 +113,4 @@ checks:
         metric: count
         must_be: 0
         level: warn
+

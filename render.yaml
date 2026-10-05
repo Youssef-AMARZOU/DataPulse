@@ -1,0 +1,33 @@
+# Deploiement de la demo DataPulse sur Render (free tier).
+# La BDD n'est pas ici : utiliser Neon (Postgres-manage gratuit) puis renseigner
+# les variables LAKEHOUSE_* dans le dashboard Render (Sync: No).
+# Schema de depart : https://render.com/docs/blueprint-spec
+services:
+  - type: web
+    name: datapulse-demo
+    runtime: docker
+    dockerfilePath: ./Dockerfile.demo
+    plan: free
+    healthCheckPath: /api/summary
+    envVars:
+      - key: LAKEHOUSE_HOST
+        sync: false
+      - key: LAKEHOUSE_PORT
+        value: "5432"
+      - key: LAKEHOUSE_DB
+        sync: false
+      - key: LAKEHOUSE_USER
+        sync: false
+      - key: LAKEHOUSE_PASSWORD
+        sync: false
+      - key: LAKEHOUSE_SSLMODE
+        value: require
+      # Jeu reduit (~3 M lignes, 1 mois TLC) pour rester dans les plans gratuits.
+      - key: TAXI_MONTHS
+        value: "2024-01"
+      # Contrat adapte au jeu reduit (row_count >= 2 500 000).
+      - key: TAXI_CONTRACT
+        value: /opt/airflow/contracts/nyc_taxi_demo.yml
+      # Pas d'export OTLP sur la demo heergee (pas de credentials).
+      - key: OTEL_EXPORTER_OTLP_ENDPOINT
+        value: ""

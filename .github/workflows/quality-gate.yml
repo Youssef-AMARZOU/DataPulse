@@ -1,0 +1,81 @@
+# Quality gate en continu sur la demo heergee (Neon free tier).
+# - flux simule : quelques lignes toutes les 15 min (la fraicheur reste < 24 h)
+# - soda contract verify sur les deux contrats (warn = exit 2 : non bloquant)
+# - badge : .github/workflows/quality-gate.yml/badge.svg
+name: quality-gate
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    env:
+      LAKEHOUSE_HOST: ${{ secrets.LAKEHOUSE_HOST }}
+      LAKEHOUSE_PORT: ${{ secrets.LAKEHOUSE_PORT }}
+      LAKEHOUSE_DB: ${{ secrets.LAKEHOUSE_DB }}
+      LAKEHOUSE_USER: ${{ secrets.LAKEHOUSE_USER }}
+      LAKEHOUSE_PASSWORD: ${{ secrets.LAKEHOUSE_PASSWORD }}
+      LAKEHOUSE_SSLMODE: require
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Installer Soda + psycopg2
+        run: pip install "soda-postgres>=4.25,<5" psycopg2-binary
+
+      - name: Flux simule (nouvelles transactions)
+        run: |
+          python - <<'PY'
+          import os
+          import psycopg2
+
+          conn = psycopg2.connect(
+              host=os.environ["LAKEHOUSE_HOST"],
+              port=os.environ["LAKEHOUSE_PORT"],
+              dbname=os.environ["LAKEHOUSE_DB"],
+              user=os.environ["LAKEHOUSE_USER"],
+              password=os.environ["LAKEHOUSE_PASSWORD"],
+              sslmode="require",
+          )
+          with conn, conn.cursor() as cur:
+              cur.execute("SELECT to_regclass('silver.transactions')")
+              if cur.fetchone()[0] is None:
+                  print("table absente (setup en cours) — insertion ignoree")
+                  raise SystemExit(0)
+              cur.execute("SELECT coalesce(max(transaction_id), 0) FROM silver.transactions")
+              base = cur.fetchone()[0]
+              cur.execute(
+                  """
+                  INSERT INTO silver.transactions
+                      (transaction_id, customer_id, amount, status, event_ts)
+                  SELECT %s + g,
+                         1000 + (g % 50),
+                         round((random() * 500 + 1)::numeric, 2),
+                         (ARRAY['completed', 'pending', 'refunded'])[1 + (g % 3)],
+                         now() - (g || ' minutes')::interval
+                  FROM generate_series(1, 4) AS g
+                  """,
+                  (base,),
+              )
+              print(f"+4 lignes (base={base})")
+          PY
+
+      - name: Verifier les contrats (warn = OK)
+        run: |
+          set +e
+          soda contract verify -ds config/ds_config.yml -c contracts/silver_transactions.yml | tee -a "$GITHUB_STEP_SUMMARY"
+          t=${PIPESTATUS[0]}
+          soda contract verify -ds config/ds_config.yml -c contracts/nyc_taxi_demo.yml | tee -a "$GITHUB_STEP_SUMMARY"
+          x=${PIPESTATUS[0]}
+          echo "transactions=$t taxi=$x" | tee -a "$GITHUB_STEP_SUMMARY"
+          # 0 = pass, 2 = warn (non bloquant) ; 1 = fail et >= 3 = error : on echoue.
+          if [ "$t" -eq 1 ] || [ "$t" -ge 3 ] || [ "$x" -eq 1 ] || [ "$x" -ge 3 ]; then
+            echo "::error::Quality gate FAILED (transactions=$t, taxi=$x)"
+            exit 1
+          fi

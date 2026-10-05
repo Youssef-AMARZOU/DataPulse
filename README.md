@@ -1,6 +1,8 @@
 # Data Quality Observability POC
 
-POC de contrôle de qualité de données : contrats **Soda Core v4** exécutés par un **DAG Airflow 3.3.2**, résultats stockés en Postgres et métriques poussées en **OTLP vers Grafana Cloud** (palier Free), avec un dashboard importable et une **démo web live** (FastAPI + UI).
+[![quality-gate](https://github.com/Youssef-AMARZOU/DataPulse/actions/workflows/quality-gate.yml/badge.svg)](https://github.com/Youssef-AMARZOU/DataPulse/actions/workflows/quality-gate.yml)
+
+POC de contrôle de qualité de données : contrats **Soda Core v4** exécutés par un **DAG Airflow 3.3.2**, résultats stockés en Postgres et métriques poussées en **OTLP vers Grafana Cloud** (palier Free), avec un dashboard importable et une **démo web live** (FastAPI + UI) — utilisable en local (Docker) ou **hébergée gratuitement** (voir section démo hébergée).
 
 ## Stack
 
@@ -79,6 +81,29 @@ La progression se lit aussi dans Postgres : `SELECT tuples_processed FROM pg_sta
 
 Arrêt : `docker compose down` (ajouter `-v` pour supprimer les volumes).
 
+## Démo hébergée (free tier, zéro localhost)
+
+Deux fichiers rendent la démo accessible par un lien public, sans Docker chez le visiteur :
+
+- **`Dockerfile.demo`** — image légère (Python + Soda + FastAPI, **sans Airflow**, ~400 Mo) ; l'API initialise la base au premier boot (seed des 60 transactions + chargement TLC selon `TAXI_MONTHS`, défaut `2024-01` ≈ 3 M lignes pour tenir dans les plans gratuits).
+- **`render.yaml`** — blueprint Render (service web free) ; l'état d'initialisation est exposé dans `/api/summary` → champ `init`.
+
+### Mise en place (une fois, ~15 min)
+
+1. **BDD gratuite — Neon** (Postgres managé, tier free) : créer un projet, noter host/port/db/user/password (SSL requis).
+2. **GitHub — secrets du quality gate** : `Settings → Secrets and variables → Actions` puis créer
+   `LAKEHOUSE_HOST`, `LAKEHOUSE_PORT` (5432), `LAKEHOUSE_DB`, `LAKEHOUSE_USER`, `LAKEHOUSE_PASSWORD` (les valeurs Neon).
+   Le workflow **quality-gate** tourne alors toutes les 15 min : il simule un flux (+4 lignes/run, la fraicheur reste < 24 h),
+   vérifie les deux contrats (warn = vert, fail = croix) et alimente le badge en haut de ce README.
+3. **Render — déploiement** : `New + → Blueprint`, pointer le dépôt GitHub ; le `render.yaml` crée le service ;
+   dans ses env vars renseigner `LAKEHOUSE_HOST/DB/USER/PASSWORD` (valeurs Neon, `LAKEHOUSE_SSLMODE` est déjà `require`).
+4. **URLs** : démo `https://datapulse-demo.onrender.com` (1ᵉʳ boot ~1-2 min : seed + 3 M lignes TLC), badge Actions dans le README.
+
+Notes : le plan free met le service en veille après inactivité (1ᵉʳ appel ~50 s, comme le cold start local) ;
+le contrat taxi hébergé est `nyc_taxi_demo.yml` (`row_count ≥ 2 500 000`, via l'env `TAXI_CONTRACT`) — le contrat
+local `nyc_taxi.yml` garde son seuil 15 M pour les 6 mois. En local tout continue de fonctionner sans rien changer
+(`startup` est un no-op quand les tables existent déjà).
+
 ## Grafana Cloud (OTLP)
 
 1. Grafana Cloud → **Connections → Add new connection → OpenTelemetry (OTLP)** et noter l'endpoint `https://otlp-gateway-<region>.grafana.net/otlp`.
@@ -137,7 +162,20 @@ Codes de sortie Soda v4 : `0` = pass, `1` = fail, `2` = warn (n'arrête pas le p
 
 Contrat (`contracts/silver_transactions.yml`) sur `lakehouse/lakehouse/silver/transactions` : `row_count`, `freshness < 24 h`, `schema`, `missing`, `duplicate`, `invalid` (montant ≥ 0, statut dans la liste).
 
-Contrat (`contracts/nyc_taxi.yml`) sur `lakehouse/lakehouse/silver/nyc_taxi` : `schema` (20 colonnes dans l'ordre), `row_count ≥ 15 M`, `freshness loaded_at < 14 j`, `missing`/`invalid` sur les colonnes métier (fare_amount, total_amount, trip_distance, passenger_count, payment_type, vendor_id) — seuils calibrés sur les stats réelles des 6 mois chargés.
+Contrat (`contracts/nyc_taxi.yml`) sur `lakehouse/lakehouse/silver/nyc_taxi` — **21 checks** dérivés du
+[Data Dictionary officiel NYC TLC](https://www.nyc.gov/assets/tlc/downloads/pdf/data_dictionary_trip_records_yellow.pdf) :
+
+- **Hard (bloquants, 19)** : `schema` (20 colonnes dans l'ordre), `row_count ≥ 15 M`, `freshness loaded_at < 14 j`,
+  domaines officiels vérifiés à 0 violation sur les 20,3 M lignes (`vendor_id ∈ [1,2,6,7]`, `rate_code_id ∈ [1..6,99]`,
+  `store_and_fwd_flag ∈ [Y,N]`, `payment_type ∈ [0..6]`, zones `pulocationid/dolocationid ∈ [1,265]`,
+  `passenger_count ∈ [0,9]`, `trip_distance ≥ 0`) + plages largees sur les montants (outliers réels jusqu'à 334 076).
+- **Warn (non bloquants, 2)** — règles du dictionnaire que les données réelles violent, en `failed_rows` + `level: warn`
+  (exit 2, le gate reste vert) : cohérence temporelle (`dropoff < pickup` → 300 lignes) et non-négativité des montants
+  (remboursements/ajustements → 316 784 lignes). Chaque check partage un `qualifier` unique (sinon Soda erreur
+  `Duplicate identity`).
+
+Un contrat en WARN sort en exit 2 : la tâche `verify_contract` reste en success, `publish_gold` s'exécute, et
+`dq_results` enregistre `outcome = warn` (affiché en ambre dans la démo).
 
 ## Vérifié le [2026-10-03]
 
@@ -157,9 +195,33 @@ Contrat (`contracts/nyc_taxi.yml`) sur `lakehouse/lakehouse/silver/nyc_taxi` : `
 - **Calibrage du contrat sur les stats réelles** : outliers extrêmes présents (fare_amount -1 285 → 334 076 ; trip_distance jusqu'à 312 722 ; payment_type inclut 0 = ~1,97 M lignes ; vendor_id ∈ {1,2,6}) — seuils élargis pour refléter la réalité TLC (`fare/total ∈ [-2 000 ; 400 000]`, `trip_distance ∈ [0 ; 400 000]`, `payment_type ∈ 0..5`).
 - **Bug loader corrigé** : `pulocationid/dolocationid/airport_fee` étaient créés en casse mixte (DuckDB conservait la casse source sans alias `AS`) → colonnes renommées dans Postgres + alias explicites ajoutés dans `loader/load_taxi.py`.
 - `soda contract verify` taxi : **14/14 checks PASSED (exit 0)** en ~6 s malgré les 20 M de lignes.
+- **Contrat enrichi depuis le Data Dictionary TLC** (après vérification empirique sur les 20,3 M) : 21 checks —
+  domaines officiels ajoutés en hard (`vendor_id`, `rate_code_id`, `store_and_fwd_flag`, zones `[1,265]`,
+  `payment_type 0..6` — tous à 0 violation) ; non-négativité des montants et `dropoff ≥ pickup` ajoutés en
+  **warn non-bloquant** (`failed_rows` + `level: warn`, `qualifier` unique obligatoire) car violés par les
+  données réelles (316 784 / 300 lignes) → résultat **19 pass / 2 warn / 0 fail, exit 2**.
+- **Le warn ne casse pas le pipeline** (testé de bout en bout) : run manuel `dq_nyc_taxi` = success,
+  `dq_results.outcome = warn`, `gold_publications` alimenté, démo API `passed=true` (affichage ambre).
 - **DAG `dq_nyc_taxi`** : dépause + run manuel **success** (`verify_contract` + `publish_gold`, `gold_publications` et `dq_metrics` peuplés pour le dataset taxi). Le run schedule du 03:05 a échoué (table absente avant chargement — artefact attendu, désormais le cron `30 */6` repasse en success).
 - **Démo multi-datasets** : `?dataset=taxi` sur `/api/summary` (20 332 093 lignes, 0 hors contrat), `/api/history`, `POST /api/check` → pass en **5,6 s** ; UI 200 ; cycle transactions `inject → check fail (exit 1) → fix → check pass` revalidé après refactor ; table absente renvoyée `null` au lieu d'erreur 500.
 - Les deux DAGs parsent sans erreur d'import (`dags list` : `dq_silver_transactions`, `dq_nyc_taxi`).
+
+## Vérifié le [2026-10-05] — socle démo hébergée
+
+- **`Dockerfile.demo`** construit (429 Mo) et testé de bout en bout contre le lakehouse local :
+  `/api/summary` (init ready, seed + flux simulé), `POST /api/check` transactions → **pass en 1,4 s**,
+  taxi avec `nyc_taxi_demo.yml` → **warn exit 2 en 25 s**, UI HTTP 200.
+- **sslmode** : `ds_config.yml` enrichi de `sslmode: ${env.LAKEHOUSE_SSLMODE}` — vérifié : contrat
+  transactions **8/8 pass** avec le nouveau champ (défaut `prefer` en local, `require` sur Neon).
+- **Flux simulé** : la fraîcheur du seed expirait après 24 h (cron en fail permanent) →
+  `demo/startup.py` insère 4 lignes / 15 min (+ au boot), idem dans le workflow Actions ;
+  fraîcheur repassée en vert après insertion.
+- **`TAXI_MONTHS`** : parsing validé (`2024-01` → `['2024-01']`) ; défaut 6 mois conservé en local.
+- **Pièges documentés** : `${env.*}` n'est **pas résolu dans les seuils des contrats Soda** → contrat
+  dédié `nyc_taxi_demo.yml` ; le paquet PyPI v4 s'appelle **`soda-postgres`** (`soda-core-postgres`
+  plafonne à 3.5.6) ; le port 8001 est déjà pris par un autre projet local (`ppe`).
+- **Non testé ici** (nécessite des comptes) : déploiement réel Render + base Neon, secrets Actions,
+  premier boot complet sur base vierge (le code de démarrage est écrit et le no-op est testé en local).
 
 ## Notes
 
