@@ -55,9 +55,9 @@ jobs:
                   INSERT INTO silver.transactions
                       (transaction_id, customer_id, amount, status, event_ts)
                   SELECT %s + g,
-                         1000 + (g % 50),
+                         1000 + (g %% 50),
                          round((random() * 500 + 1)::numeric, 2),
-                         (ARRAY['completed', 'pending', 'refunded'])[1 + (g % 3)],
+                         (ARRAY['completed', 'pending', 'refunded'])[1 + (g %% 3)],
                          now() - (g || ' minutes')::interval
                   FROM generate_series(1, 4) AS g
                   """,
