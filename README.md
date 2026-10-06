@@ -91,13 +91,16 @@ Deux fichiers rendent la démo accessible par un lien public, sans Docker chez l
 ### Mise en place (une fois, ~15 min)
 
 1. **BDD gratuite — Neon** (Postgres managé, tier free) : créer un projet, noter host/port/db/user/password (SSL requis).
+   **Important** : renommer la base en `lakehouse` (`ALTER DATABASE neondb RENAME TO lakehouse` depuis la base
+   `postgres`, ou créer une base `lakehouse`) et utiliser `LAKEHOUSE_DB=lakehouse` — sinon Soda échoue avec
+   `cross-database references are not implemented: "lakehouse.silver.*"` (les contrats qualifient `db.schema.table`).
 2. **GitHub — secrets du quality gate** : `Settings → Secrets and variables → Actions` puis créer
    `LAKEHOUSE_HOST`, `LAKEHOUSE_PORT` (5432), `LAKEHOUSE_DB`, `LAKEHOUSE_USER`, `LAKEHOUSE_PASSWORD` (les valeurs Neon).
    Le workflow **quality-gate** tourne alors toutes les 15 min : il simule un flux (+4 lignes/run, la fraicheur reste < 24 h),
    vérifie les deux contrats (warn = vert, fail = croix) et alimente le badge en haut de ce README.
 3. **Render — déploiement** : `New + → Blueprint`, pointer le dépôt GitHub ; le `render.yaml` crée le service ;
    dans ses env vars renseigner `LAKEHOUSE_HOST/DB/USER/PASSWORD` (valeurs Neon, `LAKEHOUSE_SSLMODE` est déjà `require`).
-4. **URLs** : démo `https://datapulse-demo.onrender.com` (1ᵉʳ boot ~1-2 min : seed + 3 M lignes TLC), badge Actions dans le README.
+4. **URLs** : démo **https://datapulse-demo.onrender.com** (en ligne depuis le [2026-10-06]), badge Actions dans le README.
 
 Notes : le plan free met le service en veille après inactivité (1ᵉʳ appel ~50 s, comme le cold start local) ;
 le contrat taxi hébergé est `nyc_taxi_demo.yml` (`row_count ≥ 2 500 000`, via l'env `TAXI_CONTRACT`) — le contrat
@@ -222,6 +225,28 @@ Un contrat en WARN sort en exit 2 : la tâche `verify_contract` reste en success
   plafonne à 3.5.6) ; le port 8001 est déjà pris par un autre projet local (`ppe`).
 - **Non testé ici** (nécessite des comptes) : déploiement réel Render + base Neon, secrets Actions,
   premier boot complet sur base vierge (le code de démarrage est écrit et le no-op est testé en local).
+
+## Vérifié le [2026-10-06] — déploiement réel + captures
+
+- **Neon** : projet `datapulse-demo` créé par API (plan free, région aws-us-east-2) ; base renommée
+  `neondb → lakehouse` (voir la section hébergée — Soda exige une base portant le nom des contrats) ;
+  seed + jeu TLC **2 964 624 lignes** chargés sur la base vierge (227 s, premier test du code de démarrage
+  qui a révélé deux bugs : `INIT_SQL` non commité avant l'accès DuckDB externe, et `TAXI_MONTHS` absent →
+  6 mois téléchargés ; corrigés dans `35ebaf2`). 6 secrets `LAKEHOUSE_*` poussés via `gh secret set`.
+- **Render** : service `datapulse-demo` créé par API (runtime `docker` + `Dockerfile.demo`, plan free,
+  health check `/api/summary`, autoDeploy sur `main`) — **https://datapulse-demo.onrender.com** en ligne,
+  `init: ready` au premier appel, taxi 2 964 624 lignes / 0 hors contrat.
+- **Actions** : quality-gate vert (badge README) après deux correctifs — échappement `%%` des `%` littéraux
+  psycopg2 quand la requête a des paramètres (`IndexError: tuple index out of range`), et base renommée.
+  États vérifiés sur l'hébergé : transactions `pass exit 0`, inject → `fail exit 1` → fix → `pass exit 0`,
+  taxi `warn exit 2` en 9,7 s.
+- **Captures régénérées sur la version en ligne** (Chrome headless `--headless`, sans `--headless=new`) dans
+  `Temporary Files/DataPulse-screens/` : `1-demo-FAIL.png` (85 lignes, 1 hors contrat), `2-demo-PASS.png`,
+  `5-demo-taxi-hosted.png` (WARN, 2 964 624) ; `3-soda-21-checks.png` et `4-demo-taxi-20M.png` (local) conservés.
+  Les textes UI codés en dur (« 6 mois », « 20 M ») ont été neutralisés (`f147344`) car l'hébergé ne charge
+  qu'1 mois.
+- Les clés API Neon/Render sont stockées dans `.env` local (gitignoré) ; aucun secret dans le dépôt ni dans
+  l'historique git.
 
 ## Notes
 
